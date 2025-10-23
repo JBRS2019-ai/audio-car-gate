@@ -5,15 +5,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>TM Audio — Minimal</title>
 
-<!-- 1) Load TFJS FIRST (pinned to a compatible version) -->
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
-
-<!-- 2) Load Teachable Machine AUDIO runtime -->
-<script
-  src="https://teachablemachine.withgoogle.com/js/teachablemachine-audio.min.js"
-  onload="window.__tmAudioLoaded = true"
-  onerror="window.__tmAudioError = 'Failed to load teachablemachine-audio.min.js';">
-</script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/speech-commands@0.4.0/dist/speech-commands.min.js"></script>
 
 <style>
   html,body{margin:0;height:100%;background:#e0551b;color:#fff;font:16px/1.4 system-ui,Segoe UI,Roboto,Arial,sans-serif;display:grid;place-items:center}
