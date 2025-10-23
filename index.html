@@ -94,11 +94,11 @@
         setStatus("Listening…");
         running = true;
         requestAnimationFrame(loop);
-      } catch (err) {
-        console.error(err);
-        setStatus("Error");
-        alert("Could not start audio model. See console.");
-      }
+} catch (err) {
+  console.error("initAudio error:", err);
+  setStatus("Error: " + (err && err.message ? err.message : "see console"));
+  alert("Could not start audio model. " + (err && err.message ? err.message : "See console."));
+}
     }
 
     async function loop() {
