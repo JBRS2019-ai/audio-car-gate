@@ -23,7 +23,7 @@
 <body>
 <div class="wrap">
   <div>
-    <button id="connect">🔗 Connect micro:bit</button>
+    <button id="connect" onclick="connectButtonPressed()">🔗 Connect micro:bit</button>
     <button id="start">🎙️ Start Listening</button>
   </div>
   <div id="status">Idle</div>
@@ -109,13 +109,7 @@ async function startListening(){
 
 /* ============ 3) Buttons ============ */
 $("#start").addEventListener("click", startListening);
-$("#connect").addEventListener("click", () => {
-  if (typeof connectButtonPressed === "function") {
-    connectButtonPressed();
-  } else {
-    alert("connectButtonPressed() ontbreekt. Controleer of microbit_uart_ble.js juist wordt geladen.");
-  }
-});
+
 </script>
 </body>
 </html>
