@@ -3,109 +3,168 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Teachable Machine Audio – Minimal</title>
+<title>TM Audio + micro:bit UART — Minimal</title>
 
-<!-- Use the versions shown in TM's README for audio exports -->
+<!-- TFJS + SpeechCommands (per TM Audio README) -->
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/speech-commands@0.4.0/dist/speech-commands.min.js"></script>
 
 <style>
   html,body{margin:0;height:100%;display:grid;place-items:center;background:#e0551b;color:#fff;font:16px/1.4 system-ui,Segoe UI,Roboto,Arial}
+  .wrap{display:grid;gap:10px;place-items:center}
   button{border:0;border-radius:12px;padding:12px 16px;font-weight:700;background:#fff;color:#e0551b;cursor:pointer}
-  #status{margin-top:12px;font-weight:800}
+  button:disabled{opacity:.6;cursor:not-allowed}
+  #status{font-weight:800}
+  #rx{max-height:120px;overflow:auto;width:min(560px,90vw);font:13px/1.4 ui-monospace,Consolas,monospace;background:rgba(255,255,255,.12);padding:8px 10px;border-radius:10px}
 </style>
 </head>
 <body>
-
-<button id="start">🎙️ Start Listening</button>
-<div id="status">Idle</div>
-<div id="labels"></div>
+<div class="wrap">
+  <div>
+    <button id="connect">🔗 Connect micro:bit</button>
+    <button id="start">🎙️ Start Listening</button>
+  </div>
+  <div id="status">Idle</div>
+  <div id="rx" hidden></div>
+</div>
 
 <script>
-  // --- Your TM Audio model (hosted) ---
-  const MODEL_BASE = "https://teachablemachine.withgoogle.com/models/fww4C8ATZ/"; // or take from ?model=
-  const PROB_THRESHOLD = 0.75;          // tweak as needed
-  const OVERLAP = 0.50;                 // 0.5–0.75 is typical
-  const SEND_SUFFIX = "\n";             // for micro:bit UART lines
+/* ========= 1) Teachable Machine AUDIO (hosted model) ========= */
+const MODEL_BASE = "https://teachablemachine.withgoogle.com/models/fww4C8ATZ/";
+const PROB_THRESHOLD = 0.75;
+const OVERLAP = 0.50;
 
-  // Optional: map class names to custom UART strings
-  const MAP_TO_UART = {}; // e.g. { "Auto": "Auto", "Geenauto": "Geenauto" }
+const $ = s => document.querySelector(s);
+const setStatus = t => $("#status").textContent = t;
 
-  const $ = s => document.querySelector(s);
-  const setStatus = t => $("#status").textContent = t;
+let recognizer, labels, lastLabel = "";
+async function createModel() {
+  const checkpointURL = MODEL_BASE + "model.json";
+  const metadataURL   = MODEL_BASE + "metadata.json";
+  const rec = speechCommands.create("BROWSER_FFT", undefined, checkpointURL, metadataURL);
+  await rec.ensureModelLoaded();
+  return rec;
+}
+async function startListening(){
+  try {
+    setStatus("Loading model…");
+    recognizer = await createModel();
+    labels = recognizer.wordLabels();
 
-  let recognizer, labels, lastLabel = "";
+    setStatus("Listening… allow microphone");
+    recognizer.listen(result => {
+      const scores = result.scores;
+      let topIdx = 0;
+      for (let i=1; i<scores.length; i++) if (scores[i] > scores[topIdx]) topIdx = i;
 
-  async function createModel() {
-    const checkpointURL = MODEL_BASE + "model.json";
-    const metadataURL   = MODEL_BASE + "metadata.json";
+      const topLabel = labels[topIdx];
+      const topProb  = scores[topIdx];
+      setStatus(`${topLabel} (${(topProb*100).toFixed(0)}%)`);
 
-    const rec = speechCommands.create(
-      "BROWSER_FFT",    // required
-      undefined,        // not used for custom TM models
-      checkpointURL,
-      metadataURL
-    );
-    await rec.ensureModelLoaded();
-    return rec;
+      if (topProb >= PROB_THRESHOLD && topLabel !== lastLabel) {
+        sendUART(topLabel);            // <-- goes to micro:bit as a line
+        lastLabel = topLabel;
+      }
+    }, {
+      includeSpectrogram: true,
+      probabilityThreshold: PROB_THRESHOLD,
+      invokeCallbackOnNoiseAndUnknown: true,
+      overlapFactor: OVERLAP
+    });
+  } catch (err) {
+    console.error(err);
+    alert("Could not start audio model: " + (err.message || "see console"));
+    setStatus("Error");
   }
+}
+$("#start").addEventListener("click", startListening);
 
-  function uartSend(s) {
-    if (typeof sendUART === "function") sendUART(String(s) + SEND_SUFFIX);
-    else console.log("UART:", s);
-  }
+/* ========= 2) Web Bluetooth UART for micro:bit =========
+   Service/characteristics = micro:bit UART (NOT Nordic NUS)
+   Service:        e95d93af-251d-470a-a062-fa1922dfa9a8
+   RX (write):     e95d93b1-251d-470a-a062-fa1922dfa9a8
+   TX (notify):    e95d93b0-251d-470a-a062-fa1922dfa9a8
+======================================================== */
+const UART_SERVICE   = "e95d93af-251d-470a-a062-fa1922dfa9a8";
+const UART_RX_CHAR   = "e95d93b1-251d-470a-a062-fa1922dfa9a8"; // write TO micro:bit
+const UART_TX_CHAR   = "e95d93b0-251d-470a-a062-fa1922dfa9a8"; // notify FROM micro:bit
+const MTU = 20; // BLE write chunk size
 
-  async function startListening(){
+let ble = {
+  device: null,
+  server: null,
+  rx: null, // write
+  tx: null  // notify
+};
+
+$("#connect").addEventListener("click", connectMicrobit);
+
+async function connectMicrobit(){
+  try {
+    setStatus("Scanning for micro:bit…");
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: "BBC micro:bit" }],
+      optionalServices: [UART_SERVICE]
+    });
+    ble.device = device;
+    device.addEventListener("gattserverdisconnected", onDisconnected);
+
+    setStatus("Connecting…");
+    ble.server = await device.gatt.connect();
+
+    const service = await ble.server.getPrimaryService(UART_SERVICE);
+    ble.rx = await service.getCharacteristic(UART_RX_CHAR);
+    ble.tx = await service.getCharacteristic(UART_TX_CHAR);
+
     try {
-      setStatus("Loading model…");
-      recognizer = await createModel();
-      labels = recognizer.wordLabels(); // class names
+      await ble.tx.startNotifications();
+      ble.tx.addEventListener("characteristicvaluechanged", onUartNotify);
+      $("#rx").hidden = false;
+    } catch (_) {/* some stacks don’t notify; safe to ignore */}
 
-      // show labels
-      const box = $("#labels");
-      box.innerHTML = "";
-      labels.forEach(()=> box.appendChild(document.createElement("div")));
-
-      setStatus("Listening… allow microphone");
-      recognizer.listen(result => {
-        // result.scores is an array aligned with labels[]
-        const scores = result.scores;
-        let topIdx = 0;
-        for (let i=1; i<scores.length; i++) if (scores[i] > scores[topIdx]) topIdx = i;
-
-        // render all scores
-        for (let i=0; i<labels.length; i++) {
-          box.childNodes[i].textContent = `${labels[i]}: ${scores[i].toFixed(2)}`;
-        }
-
-        const topLabel = labels[topIdx];
-        const topProb  = scores[topIdx];
-
-        setStatus(`${topLabel} (${(topProb*100).toFixed(0)}%)`);
-
-        // send only when confident AND label changed
-        if (topProb >= PROB_THRESHOLD && topLabel !== lastLabel) {
-          const cmd = (topLabel in MAP_TO_UART) ? MAP_TO_UART[topLabel] : topLabel;
-          uartSend(cmd);
-          lastLabel = topLabel;
-        }
-
-      }, {
-        includeSpectrogram: true,
-        probabilityThreshold: PROB_THRESHOLD,
-        invokeCallbackOnNoiseAndUnknown: true,
-        overlapFactor: OVERLAP
-      });
-
-      // To stop later: recognizer.stopListening();
-    } catch (err) {
-      console.error(err);
-      alert("Could not start audio model: " + (err.message || "see console"));
-      setStatus("Error");
-    }
+    setStatus("micro:bit connected");
+  } catch (err) {
+    console.error(err);
+    alert("Bluetooth connect failed: " + (err.message || "see console"));
+    setStatus("Idle");
   }
+}
 
-  $("#start").addEventListener("click", startListening);
+function onDisconnected(){
+  setStatus("Disconnected");
+}
+
+function onUartNotify(e){
+  const dec = new TextDecoder();
+  const txt = dec.decode(e.target.value);
+  const box = $("#rx");
+  box.textContent += txt;
+  box.scrollTop = box.scrollHeight;
+}
+
+// Public send function used by the TM audio callback
+async function sendUART(s){
+  try {
+    if (!ble.rx) { console.warn("Not connected; ignoring", s); return; }
+    const text = String(s).endsWith("\n") ? String(s) : (String(s) + "\n");
+    const enc = new TextEncoder();
+    const data = enc.encode(text);
+
+    // chunk to 20 bytes
+    for (let i = 0; i < data.length; i += MTU) {
+      const slice = data.slice(i, i + MTU);
+      // writeWithoutResponse if supported; otherwise writeValue
+      if (ble.rx.writeValueWithoutResponse) {
+        await ble.rx.writeValueWithoutResponse(slice);
+      } else {
+        await ble.rx.writeValue(slice);
+      }
+    }
+  } catch (err) {
+    console.error("UART write failed:", err);
+    setStatus("UART error");
+  }
+}
 </script>
 </body>
 </html>
