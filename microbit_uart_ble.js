@@ -1,97 +1,98 @@
-const UART_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
-const UART_TX_CHARACTERISTIC_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
-const UART_RX_CHARACTERISTIC_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
+// microbit_uart_ble.js — minimal Web Bluetooth bridge for micro:bit UART
+// Exposes: connectButtonPressed(), sendUART(str)
 
-let uBitDevice;
-let rxCharacteristic;
+(function () {
+  // micro:bit UART service & characteristics (NOT Nordic NUS)
+  const UART_SERVICE = 'e95d93af-251d-470a-a062-fa1922dfa9a8';
+  const UART_TX = 'e95d93b0-251d-470a-a062-fa1922dfa9a8'; // notify FROM micro:bit
+  const UART_RX = 'e95d93b1-251d-470a-a062-fa1922dfa9a8'; // write  TO   micro:bit
 
+  // BLE write MTU (micro:bit is small; keep chunks <= 20 bytes)
+  const MTU = 20;
 
-async function connectButtonPressed() {
-  try {
-    console.log("Requesting Bluetooth Device...");
-    uBitDevice = await navigator.bluetooth.requestDevice({
-      filters: [{ namePrefix: "BBC micro:bit" }],
-      optionalServices: [UART_SERVICE_UUID]
+  const state = {
+    device: null,
+    server: null,
+    service: null,
+    txChar: null, // notify
+    rxChar: null  // write
+  };
+
+  function log(...args) {
+    try { console.log('[microbit-ble]', ...args); } catch (_) {}
+  }
+
+  async function connect() {
+    // Accept all devices; rely on service filter so the picker is populated
+    const device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: [UART_SERVICE]
     });
+    state.device = device;
+    device.addEventListener('gattserverdisconnected', () => log('disconnected'));
 
-    uBitDevice.addEventListener('gattserverdisconnected', onDisconnected);
+    state.server = await device.gatt.connect();
+    state.service = await state.server.getPrimaryService(UART_SERVICE);
 
+    // Get characteristics
+    state.txChar = await state.service.getCharacteristic(UART_TX);
+    state.rxChar = await state.service.getCharacteristic(UART_RX);
 
-    console.log("Connecting to GATT Server...");
-    const server = await uBitDevice.gatt.connect();
+    // Start notifications (optional, but useful for debugging)
+    try {
+      await state.txChar.startNotifications();
+      state.txChar.addEventListener('characteristicvaluechanged', onNotify);
+    } catch (_) {
+      log('notifications not available (ok to ignore)');
+    }
 
-    console.log("Getting Service...");
-    const service = await server.getPrimaryService(UART_SERVICE_UUID);
-
-    console.log("Getting Characteristics...");
-    const txCharacteristic = await service.getCharacteristic(
-      UART_TX_CHARACTERISTIC_UUID
-    );
-    txCharacteristic.startNotifications();
-    txCharacteristic.addEventListener(
-      "characteristicvaluechanged",
-      onTxCharacteristicValueChanged
-    );
-    rxCharacteristic = await service.getCharacteristic(
-      UART_RX_CHARACTERISTIC_UUID
-    );
-    document.getElementById('robotShow').classList.add("robotShow_connected");
-  } catch (error) {
-    console.log(error);
-  }
-}
-
-function disconnectButtonPressed() {
-  if (!uBitDevice) {
-    return;
+    log('connected');
   }
 
-  if (uBitDevice.gatt.connected) {
-    uBitDevice.gatt.disconnect();
-    console.log("Disconnected");
-  }
-}
-
-
-
-
-async function sendUART(num) {
-
-  let encoder = new TextEncoder();
-  queueGattOperation(() => rxCharacteristic.writeValue(encoder.encode(num+"\n"))
-      .then(() => console.log("WRITE"))
-      .catch(error => console.error('Błąd podczas wysyłania danych:', error)));
-}
-
-
-
-let queue = Promise.resolve();
-
-function queueGattOperation(operation) {
-   queue = queue.then(operation, operation);
-   return queue;
-}
-
-
-
-
-function onTxCharacteristicValueChanged(event) {
-  let receivedData = [];
-  for (var i = 0; i < event.target.value.byteLength; i++) {
-    receivedData[i] = event.target.value.getUint8(i);
+  function onNotify(e) {
+    const text = new TextDecoder().decode(e.target.value || new DataView());
+    log('RX <=', JSON.stringify(text));
+    // If you want to surface this to the page:
+    if (typeof window.onMicrobitUart === 'function') window.onMicrobitUart(text);
   }
 
-  const receivedString = String.fromCharCode.apply(null, receivedData);
-  console.log(receivedString);
-  if (receivedString === "S") {
-    console.log("Shaken!");
+  async function sendUARTLine(str) {
+    if (!state.rxChar) {
+      log('sendUART called but not connected');
+      return;
+    }
+    const line = String(str).endsWith('\n') ? String(str) : String(str) + '\n';
+    const data = new TextEncoder().encode(line);
+
+    // chunk writes
+    for (let i = 0; i < data.length; i += MTU) {
+      const chunk = data.slice(i, i + MTU);
+      if (state.rxChar.writeValueWithoutResponse) {
+        await state.rxChar.writeValueWithoutResponse(chunk);
+      } else {
+        await state.rxChar.writeValue(chunk);
+      }
+    }
+    log('TX =>', JSON.stringify(line));
   }
-}
 
+  // ----- public API expected by your HTML -----
+  window.connectButtonPressed = async function () {
+    try {
+      if (!('bluetooth' in navigator)) {
+        alert('Web Bluetooth is not supported in this browser.');
+        return;
+      }
+      await connect();
+      if (typeof window.onMicrobitConnected === 'function') window.onMicrobitConnected();
+    } catch (err) {
+      console.error(err);
+      alert('Bluetooth connect failed: ' + (err.message || 'see console'));
+    }
+  };
 
-
-function onDisconnected(event) {
-  let device = event.target;
-  console.log(`Device ${device.name} is disconnected.`);
-  document.getElementById('robotShow').classList.remove("robotShow_connected");
-}
+  window.sendUART = function (s) {
+    // fire-and-forget; errors reported to console
+    sendUARTLine(s).catch(err => console.error('UART write failed', err));
+  };
+})();
