@@ -1,94 +1,152 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TM Audio — Minimal</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Teachable Micro:Bit — AUDIO</title>
 
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/speech-commands@0.4.0/dist/speech-commands.min.js"></script>
+  <!-- Minimal styling -->
+  <style>
+    :root { --bg:#e0551b; --fg:#fff; --ink:#1b1b1b; }
+    html,body { height:100%; margin:0; font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--fg); }
+    .wrap { min-height:100%; display:grid; place-items:center; padding:32px; }
+    .card { width:min(680px, 92vw); background:rgba(255,255,255,0.08); border-radius:16px; padding:28px; box-shadow:0 8px 24px rgba(0,0,0,.18); }
+    h1 { margin:0 0 6px; font-size:1.25rem; font-weight:700; letter-spacing:.2px; }
+    .row { display:flex; gap:12px; flex-wrap:wrap; margin-top:16px; }
+    button { appearance:none; border:0; border-radius:12px; padding:12px 16px; font-size:1rem; font-weight:700; color:var(--bg); background:var(--fg); cursor:pointer; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    .label { margin-top:18px; font-size:1.15rem; font-weight:800; }
+    .hint { opacity:.85; font-size:.9rem; }
+    .pill { display:inline-block; padding:4px 10px; border-radius:999px; background:rgba(255,255,255,.16); font-size:.85rem; }
+  </style>
 
-<style>
-  html,body{margin:0;height:100%;background:#e0551b;color:#fff;font:16px/1.4 system-ui,Segoe UI,Roboto,Arial,sans-serif;display:grid;place-items:center}
-  button{border:0;border-radius:12px;padding:12px 16px;font-weight:700;cursor:pointer;background:#fff;color:#e0551b}
-  #status{margin-top:12px;font-weight:800}
-</style>
+  <!-- TensorFlow.js (online) -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
+  <!-- Teachable Machine AUDIO runtime (online) -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/speech-commands@0.4.0/dist/speech-commands.min.js"></script>
+  <!-- micro:bit Bluetooth bridge (keep this local in the same folder) -->
+  <script src="microbit_uart_ble.js"></script>
 </head>
 <body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Teachable Micro:Bit — <span class="pill">Audio</span></h1>
+      <div class="hint">Paste your Teachable Machine <b>Audio</b> model via <code>?model=...</code> in the URL. Then: <b>Connect</b> → <b>Start Listening</b>.</div>
 
-<button id="start">🎙️ Start Listening</button>
-<div id="status">Idle</div>
+      <div class="row" style="margin-top:20px;">
+        <button id="connect_btn" type="button" title="Connect to micro:bit">🔗 Connect</button>
+        <button id="start_btn" type="button" title="Start microphone and model">🎙️ Start Listening</button>
+      </div>
 
-<script>
-  const $ = s => document.querySelector(s);
-  const setStatus = t => $("#status").textContent = t;
+      <div class="label" id="status">Idle</div>
+    </div>
+  </div>
 
-  function getModelBase(){
-    const m = new URL(location.href).searchParams.get("model");
-    if (!m) return null;
-    return /^https?:\/\//i.test(m) ? (m.endsWith("/") ? m : m + "/")
-                                   : `https://teachablemachine.withgoogle.com/models/${m}/`;
-  }
+  <script>
+    // ------- configuration you might tweak -------
+    const CONFIDENCE = 0.75;     // ignore weak predictions
+    const STABLE = 2;            // require N consecutive frames before sending
+    const SEND_SUFFIX = "\n";    // MakeCode UART: read until newline
+    const IDLE_CLASS = "Idle";   // label to use when below threshold
 
-  // Wait for tmAudio to be available or fail with a clear reason
-  async function ensureTmAudio(){
-    if (window.__tmAudioLoaded && typeof tmAudio !== "undefined") return;
-    // Give the script a brief moment to load
-    for (let i=0; i<20; i++){
-      await new Promise(r=>setTimeout(r, 50));
-      if (typeof tmAudio !== "undefined") return;
+    // If you want to map class names to different UART strings:
+    // e.g. {"Forward":"Auto","Background":"Geenauto"}
+    const MAP_TO_UART = {};      // keep empty to send class names as-is
+
+    // ------- state -------
+    let model = null;
+    let mic = null;
+    let lastCmd = IDLE_CLASS;
+    let stableCount = 0;
+    let running = false;
+
+    // micro:bit UART sender (provided by microbit_uart_ble.js)
+    function uartSend(s) {
+      if (typeof sendUART === "function") sendUART(String(s) + SEND_SUFFIX);
+      else console.warn("sendUART() not found; printing:", s);
     }
-    const msg = window.__tmAudioError || "tmAudio runtime not loaded. Check script URL/order, content blockers, or CSP.";
-    throw new Error(msg);
-  }
 
-  let model, mic, running = false, last = "";
-
-  async function startListening(){
-    if (running) return;
-    const base = getModelBase();
-    if (!base) { alert("Add ?model=<AudioModelID or full URL>"); return; }
-
-    try {
-      await ensureTmAudio();
-
-      setStatus("Loading model…");
-      model = await tmAudio.load(base + "model.json", base + "metadata.json");
-
-      setStatus("Opening microphone…");
-      mic = new tmAudio.Microphone();
-      await mic.setup();       // user permission
-      await mic.play();
-
-      setStatus("Listening…");
-      running = true;
-      loop();
-    } catch (err) {
-      console.error("initAudio error:", err);
-      setStatus("Error: " + (err && err.message ? err.message : "see console"));
-      alert("Could not start audio model. " + (err && err.message ? err.message : "See console."));
+    // Parse ?model=... (supports ID or full URL)
+    function getModelBase() {
+      const u = new URL(location.href);
+      const m = u.searchParams.get("model");
+      if (!m) return null;
+      if (/^https?:\/\//i.test(m)) return m.endsWith("/") ? m : m + "/";
+      return `https://teachablemachine.withgoogle.com/models/${m}/`;
     }
-  }
 
-  async function loop(){
-    if (!running) return;
-    try {
-      const preds = await model.predict(mic);
-      preds.sort((a,b)=>b.probability - a.probability);
-      const top = preds[0] || {className:"Idle", probability:0};
-      setStatus(`${top.className} (${Math.round(top.probability*100)}%)`);
+    function setStatus(t) { document.getElementById("status").textContent = t; }
 
-      if (top.className !== last) {
-        if (typeof sendUART === "function") sendUART(top.className + "\n");
-        last = top.className;
+    async function initAudio() {
+      if (running) return;
+      const base = getModelBase();
+      if (!base) { alert("Add ?model=<ID or full model URL> to the page."); return; }
+
+      try {
+        setStatus("Loading model…");
+        model = await tmAudio.load(base + "model.json", base + "metadata.json");
+
+        setStatus("Opening microphone…");
+        mic = new tmAudio.Microphone();          // default device
+        await mic.setup();                        // ask for mic permission
+        await mic.play();
+
+        setStatus("Listening…");
+        running = true;
+        requestAnimationFrame(loop);
+      } catch (err) {
+        console.error(err);
+        setStatus("Error");
+        alert("Could not start audio model. See console.");
       }
-      await tf.nextFrame();
-    } finally {
-      requestAnimationFrame(loop);
     }
-  }
 
-  $("#start").addEventListener("click", startListening);
-</script>
+    async function loop() {
+      if (!running) return;
+      try {
+        const preds = await model.predict(mic);
+        handle(preds);
+        await tf.nextFrame();
+        requestAnimationFrame(loop);
+      } catch (e) {
+        console.error("Loop error:", e);
+        requestAnimationFrame(loop);
+      }
+    }
+
+    function handle(preds) {
+      // sort by probability
+      preds.sort((a,b) => b.probability - a.probability);
+      const top = preds[0] || { className: IDLE_CLASS, probability: 0 };
+
+      // UI
+      const pct = Math.round(top.probability * 100);
+      setStatus(`${top.className} (${pct}%)`);
+
+      // confidence + mapping
+      const confident = top.probability >= CONFIDENCE;
+      const raw = confident ? top.className : IDLE_CLASS;
+      const cmd = (raw in MAP_TO_UART) ? MAP_TO_UART[raw] : raw;
+
+      // simple stability filter
+      if (cmd === lastCmd) stableCount++; else stableCount = 1;
+
+      // send only when the command actually changes and is stable
+      if (stableCount >= STABLE && cmd !== lastCmd) {
+        uartSend(cmd);
+      }
+      lastCmd = cmd;
+    }
+
+    // Buttons
+    document.getElementById("connect_btn").addEventListener("click", () => {
+      if (typeof connectButtonPressed === "function") connectButtonPressed();
+      else alert("connectButtonPressed() not found in microbit_uart_ble.js");
+    });
+    document.getElementById("start_btn").addEventListener("click", initAudio);
+
+    // Cleanup
+    window.addEventListener("beforeunload", () => { try { if (mic) mic.stop(); } catch(e){} });
+  </script>
 </body>
 </html>
