@@ -3,12 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TM Audio — Start Listening</title>
+<title>TM Audio — Minimal</title>
 
-<!-- TensorFlow.js (pinned to a compatible version) -->
+<!-- 1) Load TFJS FIRST (pinned to a compatible version) -->
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
-<!-- Teachable Machine AUDIO runtime -->
-<script src="https://teachablemachine.withgoogle.com/js/teachablemachine-audio.min.js"></script>
+
+<!-- 2) Load Teachable Machine AUDIO runtime -->
+<script
+  src="https://teachablemachine.withgoogle.com/js/teachablemachine-audio.min.js"
+  onload="window.__tmAudioLoaded = true"
+  onerror="window.__tmAudioError = 'Failed to load teachablemachine-audio.min.js';">
+</script>
 
 <style>
   html,body{margin:0;height:100%;background:#e0551b;color:#fff;font:16px/1.4 system-ui,Segoe UI,Roboto,Arial,sans-serif;display:grid;place-items:center}
@@ -22,19 +27,28 @@
 <div id="status">Idle</div>
 
 <script>
-  // ===== minimal helpers =====
-  const $ = sel => document.querySelector(sel);
+  const $ = s => document.querySelector(s);
   const setStatus = t => $("#status").textContent = t;
-  const getModelBase = () => {
+
+  function getModelBase(){
     const m = new URL(location.href).searchParams.get("model");
     if (!m) return null;
     return /^https?:\/\//i.test(m) ? (m.endsWith("/") ? m : m + "/")
                                    : `https://teachablemachine.withgoogle.com/models/${m}/`;
-  };
-  const uartSend = s => (typeof sendUART === "function") ? sendUART(String(s) + "\n")
-                                                         : console.log("UART:", s);
+  }
 
-  // ===== audio init & loop =====
+  // Wait for tmAudio to be available or fail with a clear reason
+  async function ensureTmAudio(){
+    if (window.__tmAudioLoaded && typeof tmAudio !== "undefined") return;
+    // Give the script a brief moment to load
+    for (let i=0; i<20; i++){
+      await new Promise(r=>setTimeout(r, 50));
+      if (typeof tmAudio !== "undefined") return;
+    }
+    const msg = window.__tmAudioError || "tmAudio runtime not loaded. Check script URL/order, content blockers, or CSP.";
+    throw new Error(msg);
+  }
+
   let model, mic, running = false, last = "";
 
   async function startListening(){
@@ -43,12 +57,14 @@
     if (!base) { alert("Add ?model=<AudioModelID or full URL>"); return; }
 
     try {
+      await ensureTmAudio();
+
       setStatus("Loading model…");
       model = await tmAudio.load(base + "model.json", base + "metadata.json");
 
       setStatus("Opening microphone…");
       mic = new tmAudio.Microphone();
-      await mic.setup();       // user allows mic
+      await mic.setup();       // user permission
       await mic.play();
 
       setStatus("Listening…");
@@ -56,8 +72,8 @@
       loop();
     } catch (err) {
       console.error("initAudio error:", err);
-      setStatus("Error: " + (err?.message || "see console"));
-      alert("Could not start audio model. " + (err?.message || "See console."));
+      setStatus("Error: " + (err && err.message ? err.message : "see console"));
+      alert("Could not start audio model. " + (err && err.message ? err.message : "See console."));
     }
   }
 
@@ -67,11 +83,10 @@
       const preds = await model.predict(mic);
       preds.sort((a,b)=>b.probability - a.probability);
       const top = preds[0] || {className:"Idle", probability:0};
-      const label = `${top.className} (${Math.round(top.probability*100)}%)`;
-      setStatus(label);
+      setStatus(`${top.className} (${Math.round(top.probability*100)}%)`);
 
       if (top.className !== last) {
-        uartSend(top.className);   // optional: only if sendUART exists
+        if (typeof sendUART === "function") sendUART(top.className + "\n");
         last = top.className;
       }
       await tf.nextFrame();
