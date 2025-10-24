@@ -2,10 +2,10 @@
 // Exposes: connectButtonPressed(), sendUART(str)
 
 (function () {
-  // micro:bit UART service & characteristics (NOT Nordic NUS)
-  const UART_SERVICE = 'e95d93af-251d-470a-a062-fa1922dfa9a8';
-  const UART_TX = 'e95d93b0-251d-470a-a062-fa1922dfa9a8'; // notify FROM micro:bit
-  const UART_RX = 'e95d93b1-251d-470a-a062-fa1922dfa9a8'; // write  TO   micro:bit
+// Nordic UART Service (NUS) UUIDs
+const UART_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const UART_TX = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // data FROM micro:bit (indicate)
+const UART_RX = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // data TO micro:bit (write)
 
   // BLE write MTU (micro:bit is small; keep chunks <= 20 bytes)
   const MTU = 20;
