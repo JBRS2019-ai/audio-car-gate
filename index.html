@@ -38,8 +38,8 @@ const MODEL_BASE = /^https?:\/\//.test(id)
   : `https://teachablemachine.withgoogle.com/models/${id}/`;
 
 /* ============ 2) Teachable Machine AUDIO ============ */
-const PROB_THRESHOLD = 0.75;
-const OVERLAP = 0.50;
+const PROB_THRESHOLD = 0.90;
+const OVERLAP = 0.20;
 const SEND_SUFFIX = "\n";    // MakeCode: lees tot nieuwe regel
 
 // Optional mapping (rename labels before sending)
@@ -89,11 +89,18 @@ async function startListening(){
 
       setStatus(`${label} (${(prob*100).toFixed(0)}%)`);
 
-      if (prob >= PROB_THRESHOLD && label !== lastLabel) {
-        const cmd = (label in MAP_TO_UART) ? MAP_TO_UART[label] : label;
-        sendLine(cmd);
-        lastLabel = label;
-      }
+// ---- Cooldown-protected trigger ----
+if (prob >= PROB_THRESHOLD && label !== lastLabel) {
+  const now = Date.now();
+  const COOLDOWN_MS = 1500; // wait at least 1.5 seconds between triggers
+  if (!window.lastTriggerTime || now - window.lastTriggerTime > COOLDOWN_MS) {
+    const cmd = (label in MAP_TO_UART) ? MAP_TO_UART[label] : label;
+    sendLine(cmd);
+    lastLabel = label;
+    window.lastTriggerTime = now;
+  }
+}
+
     }, {
       includeSpectrogram: true,
       probabilityThreshold: PROB_THRESHOLD,
